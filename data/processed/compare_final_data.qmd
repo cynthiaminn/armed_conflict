@@ -1,0 +1,86 @@
+---
+title: "Comparison of Week 3 and coding-agent analytical datasets"
+format: html
+execute:
+  warning: false
+  message: false
+---
+
+## Purpose
+
+This report compares the Week 3 manually created `final_data` with an independently created agent dataset. A comparison is only meaningful once both complete datasets exist.
+
+```{r}
+library(dplyr)
+library(readr)
+library(tidyr)
+original_path <- 'data/processed/final_data.csv'
+agent_path <- 'data/processed/final_data_agent.csv'
+if (!file.exists(original_path) || !file.exists(agent_path)) {
+  stop('Add both complete files: final_data.csv and final_data_agent.csv. Do not compare partial_data_without_covariates.csv as final.')
+}
+original <- read_csv(original_path, show_col_types=FALSE)
+agent <- read_csv(agent_path, show_col_types=FALSE)
+```
+
+## Dimensions and variable names
+
+```{r}
+tibble(dataset=c('Original','Agent'), rows=c(nrow(original),nrow(agent)), columns=c(ncol(original),ncol(agent)))
+tibble(only_in_original=setdiff(names(original),names(agent)) %>% paste(collapse=', '),
+       only_in_agent=setdiff(names(agent),names(original)) %>% paste(collapse=', '))
+```
+
+## Variable types
+
+```{r}
+common <- intersect(names(original),names(agent))
+tibble(variable=common, original=sapply(original[common], function(x) class(x)[1]),
+       agent=sapply(agent[common], function(x) class(x)[1])) %>%
+  filter(original != agent)
+```
+
+## Missingness
+
+```{r}
+missing_summary <- function(df,label) {
+  tibble(variable=names(df), missing=vapply(df, function(x) sum(is.na(x)), integer(1)), dataset=label)
+}
+bind_rows(missing_summary(original,'Original'),missing_summary(agent,'Agent')) %>%
+  pivot_wider(names_from=dataset,values_from=missing) %>%
+  mutate(difference=Original-Agent) %>%
+  arrange(desc(abs(difference)))
+```
+
+## Duplicated keys
+
+```{r}
+stopifnot(all(c('iso','year') %in% names(original)), all(c('iso','year') %in% names(agent)))
+bind_rows(original %>% count(iso,year) %>% filter(n>1) %>% mutate(dataset='Original'),
+          agent %>% count(iso,year) %>% filter(n>1) %>% mutate(dataset='Agent'))
+```
+
+## Country-year and variable-value differences
+
+```{r}
+keys <- c('iso','year')
+anti_join(original,agent,by=keys) %>% select(all_of(keys)) %>% head(25)
+anti_join(agent,original,by=keys) %>% select(all_of(keys)) %>% head(25)
+if (anyDuplicated(original[keys]) || anyDuplicated(agent[keys])) stop('Resolve duplicated country-year keys before comparison')
+shared <- intersect(setdiff(names(original),keys),setdiff(names(agent),keys))
+left <- original %>% select(all_of(c(keys,shared))) %>% arrange(iso,year)
+right <- agent %>% select(all_of(c(keys,shared))) %>% arrange(iso,year)
+joined <- inner_join(left,right,by=keys,suffix=c('_original','_agent'))
+differences <- lapply(shared,function(v) {
+  x <- joined[[paste0(v,'_original')]]
+  y <- joined[[paste0(v,'_agent')]]
+  unequal <- if(is.numeric(x) && is.numeric(y)) !(abs(x-y) <= 1e-8 | (is.na(x)&is.na(y))) else !(as.character(x)==as.character(y) | (is.na(x)&is.na(y)))
+  unequal[is.na(unequal)] <- TRUE
+  tibble(variable=v, different=sum(unequal))
+}) %>% bind_rows() %>% arrange(desc(different))
+differences
+```
+
+## Interpretation and corrections
+
+**Interpretation to review after rendering:** Review any differing country-year observations, values, missingness, or types. Inspect both scripts and the original paper to identify why they differ. Explain which implementation is correct and why; do not automatically assume the agent version is correct or more efficient. Record any corrections made to the original code and rerun the comparison.
